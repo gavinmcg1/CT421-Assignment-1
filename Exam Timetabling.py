@@ -5,20 +5,38 @@ from statistics import mean, stdev
 import os
 
 def read_instance(file_path):
+    """Read exam timetabling instance from file.
+    
+    Args:
+        file_path: Path to instance file
+    
+    Returns:
+        N: Number of exams
+        K: Number of timeslots
+        M: Number of students
+        E: Student-exam enrollment matrix (M x N)
+    """
     with open(file_path, 'r') as file:
         lines = file.readlines()
+    # First line contains N, K, M
     N, K, M = map(int, lines[0].strip().split())
+    # Next M lines contain enrollment matrix (1 = student enrolled in exam)
     E = [list(map(int, lines[i].strip().split())) for i in range(1, M + 1)]
     return N, K, M, np.array(E)
 
 def hard_constraints_violations(timetable, E, M, N):
+    """Count hard constraint violations (students with exams in same timeslot).
+    
+    Hard constraints: No student can have two exams scheduled at the same time.
+    Each violation represents a student with conflicting exams.
+    """
     violations = 0
     for student in range(M):
-        slots_seen = set()
+        slots_seen = set()  # Track timeslots used by this student
         for exam in range(N):
-            if E[student][exam] == 1:
+            if E[student][exam] == 1:  # Student is enrolled in this exam
                 slot = timetable[exam]
-                if slot in slots_seen:
+                if slot in slots_seen:  # Conflict! Student already has exam in this slot
                     violations += 1
                 else:
                     slots_seen.add(slot)
@@ -28,52 +46,83 @@ def get_students_slots(student, timetable, E, N):
     return sorted([timetable[exam] for exam in range(N) if E[student][exam] == 1])
 
 def soft_constraints_violations(timetable, E, M, N, K):
+    """Count soft constraint violations (quality of timetable for students).
+    
+    Soft constraints penalize:
+    1. Consecutive exams (back-to-back timeslots) - student fatigue
+    2. Long gaps between exams (> K/2) - inconvenient scheduling
+    3. End clustering (all exams in last 2 days) - cramming
+    """
     total_penalty = 0
     for student in range(M):
         slots = get_students_slots(student, timetable, E, N)
         if not slots:
             continue
         
-        # Consecutive slots penalty
+        # Penalty 1: Consecutive exams (student has no break between exams)
         for i in range(len(slots) - 1):
             if slots[i + 1] - slots[i] == 1:
                 total_penalty += 1
         
-        # Long exam gap penalty
+        # Penalty 2: Long gap between exams (poor schedule spread)
         if len(slots) >= 2:
             max_gap = max(slots[i + 1] - slots[i] for i in range(len(slots) - 1))
             if max_gap > K // 2:
                 total_penalty += 1
         
-        # End cluster penalty
+        # Penalty 3: All exams clustered at the end (last 2 timeslots)
         if all(slot >= K - 2 for slot in slots):
             total_penalty += 1
     
     return total_penalty
 
 def evaluate_fitness(timetable, E, M, N, K):
+    """Evaluate timetable quality (lower is better).
+    
+    Fitness = hard_violations * 1000 + soft_violations
+    Hard violations heavily weighted (1000x) to prioritize feasibility.
+    """
     hard = hard_constraints_violations(timetable, E, M, N)
     soft = soft_constraints_violations(timetable, E, M, N, K)
-    return hard * 1000 + soft
+    return hard * 1000 + soft  # Hard constraints are critical
 
 def tournament_selection(population, fitnesses, tournament_size=3):
+    """Select parent using tournament selection.
+    
+    Randomly picks tournament_size individuals and returns the best one.
+    Provides selection pressure while maintaining diversity.
+    """
     indices = random.sample(range(len(population)), tournament_size)
-    best_idx = min(indices, key=lambda i: fitnesses[i])
+    best_idx = min(indices, key=lambda i: fitnesses[i])  # Lower fitness is better
     return population[best_idx].copy()
 
 def crossover(parent1, parent2, crossover_rate=0.8):
+    """Single-point crossover between two parent timetables.
+    
+    Combines genetic material from both parents to create offspring.
+    """
     if random.random() > crossover_rate:
-        return parent1.copy(), parent2.copy()
+        return parent1.copy(), parent2.copy()  # No crossover
+    # Split at random point and swap tails
     point = random.randint(1, len(parent1) - 1)
     return parent1[:point] + parent2[point:], parent2[:point] + parent1[point:]
 
 def mutate(timetable, K, mutation_rate=0.05):
+    """Randomly mutate exam timeslots to introduce variation.
+    
+    Each exam has mutation_rate probability of being reassigned to a random slot.
+    Helps escape local optima and maintain genetic diversity.
+    """
     for i in range(len(timetable)):
         if random.random() < mutation_rate:
-            timetable[i] = random.randint(0, K - 1)
+            timetable[i] = random.randint(0, K - 1)  # Assign random timeslot
 
 def local_search(timetable, E, M, N, K, max_iterations=50):
-    """Aggressive hill climbing with full neighborhood exploration"""
+    """Aggressive hill climbing with full neighborhood exploration.
+    
+    Iteratively improves solution by testing all single-exam moves
+    and accepting the best improvement. Stops when no improvement found.
+    """
     current = timetable.copy()
     current_fitness = evaluate_fitness(current, E, M, N, K)
     
@@ -81,7 +130,7 @@ def local_search(timetable, E, M, N, K, max_iterations=50):
         best_move = None
         best_fitness = current_fitness
         
-        # Try all possible single-exam moves
+        # Evaluate all possible single-exam moves (N * K possibilities)
         for i in range(N):
             old_slot = current[i]
             for new_slot in range(K):
@@ -91,12 +140,12 @@ def local_search(timetable, E, M, N, K, max_iterations=50):
                     if new_fitness < best_fitness:
                         best_fitness = new_fitness
                         best_move = (i, new_slot)
-                    current[i] = old_slot
+                    current[i] = old_slot  # Restore for next test
         
-        if best_move is None:
+        if best_move is None:  # No improvement found - local optimum reached
             break
         
-        # Apply best move
+        # Apply the best move found and continue
         current[best_move[0]] = best_move[1]
         current_fitness = best_fitness
     
@@ -104,63 +153,85 @@ def local_search(timetable, E, M, N, K, max_iterations=50):
 
 def run_ga(
     file_path,
-    pop_size=100,
-    generations=500,
-    crossover_rate=0.8,
-    mutation_rate=0.05,
-    elitism_count=2,
-    tournament_size=3,
-    seed=None,
+    pop_size=100,           # Population size (number of candidate solutions)
+    generations=500,        # Number of evolutionary iterations
+    crossover_rate=0.8,     # Probability of crossover between parents
+    mutation_rate=0.05,     # Probability of mutating each gene
+    elitism_count=2,        # Number of best solutions to preserve
+    tournament_size=3,      # Tournament size for parent selection
+    seed=None,              # Random seed for reproducibility
 ):
+    """Main Genetic Algorithm for exam timetabling.
+    
+    Evolves population of timetables over generations using:
+    - Tournament selection
+    - Single-point crossover
+    - Random mutation
+    - Elitism (preserving best solutions)
+    - Adaptive mutation (increases when stagnating)
+    - Periodic local search refinement
+    """
     if seed is not None:
         random.seed(seed)
 
+    # Load problem instance
     N, K, M, E = read_instance(file_path)
-    population = [[random.randint(0, K - 1) for _ in range(N)] for _ in range(pop_size)]
-    best_fitness_per_gen = []
     
+    # Initialize population with random timetables
+    population = [[random.randint(0, K - 1) for _ in range(N)] for _ in range(pop_size)]
+    best_fitness_per_gen = []  # Track convergence
+    
+    # Adaptive mutation parameters
     stagnation_counter = 0
     adaptive_mutation = mutation_rate
 
     for gen in range(generations):
+        # Evaluate all timetables in current population
         fitnesses = [evaluate_fitness(t, E, M, N, K) for t in population]
         current_best = min(fitnesses)
         best_fitness_per_gen.append(current_best)
         
-        # Adaptive mutation: increase if stagnating
+        # Adaptive mutation: increase if stagnating to escape local optima
         if len(best_fitness_per_gen) > 1 and current_best == best_fitness_per_gen[-2]:
             stagnation_counter += 1
-            if stagnation_counter > 20:
-                adaptive_mutation = min(0.3, mutation_rate * 2)
+            if stagnation_counter > 20:  # Stuck for 20 generations
+                adaptive_mutation = min(0.3, mutation_rate * 2)  # Double mutation rate
         else:
             stagnation_counter = 0
-            adaptive_mutation = mutation_rate
+            adaptive_mutation = mutation_rate  # Reset to normal
 
+        # Elitism: carry forward the best solutions unchanged
         elite_indices = sorted(range(len(fitnesses)), key=lambda i: fitnesses[i])[:elitism_count]
         new_population = [population[i].copy() for i in elite_indices]
         
-        # Apply local search to best solution every 50 generations
+        # Periodic local search: refine best solution every 50 generations
         if gen % 50 == 0 and gen > 0:
             best_idx = elite_indices[0]
             new_population[0] = local_search(population[best_idx], E, M, N, K, max_iterations=10)
 
+        # Generate offspring to fill rest of population
         while len(new_population) < pop_size:
+            # Select parents via tournament
             parent1 = tournament_selection(population, fitnesses, tournament_size)
             parent2 = tournament_selection(population, fitnesses, tournament_size)
+            # Create offspring through crossover
             child1, child2 = crossover(parent1, parent2, crossover_rate)
+            # Apply mutation to offspring
             mutate(child1, K, adaptive_mutation)
             mutate(child2, K, adaptive_mutation)
+            # Add to new population
             new_population.append(child1)
             if len(new_population) < pop_size:
                 new_population.append(child2)
 
-        population = new_population
+        population = new_population  # Replace old generation
 
+    # Extract best solution from final population
     fitnesses = [evaluate_fitness(t, E, M, N, K) for t in population]
     best_index = fitnesses.index(min(fitnesses))
     best_timetable = population[best_index]
     
-    # Final local search refinement
+    # Apply intensive local search to polish final solution
     best_timetable = local_search(best_timetable, E, M, N, K, max_iterations=50)
     best_fitness = evaluate_fitness(best_timetable, E, M, N, K)
     
@@ -196,7 +267,6 @@ def run_multiple_trials(file_path, params, num_trials=10):
         'best_fitness': min(fitnesses),
         'worst_fitness': max(fitnesses),
         'mean_fitness': mean(fitnesses),
-        'std_fitness': stdev(fitnesses) if len(fitnesses) > 1 else 0,
         'mean_hard': mean(hard_violations),
         'mean_soft': mean(soft_violations),
         'best_solution': results[fitnesses.index(min(fitnesses))]['timetable'],
@@ -215,6 +285,11 @@ def format_solution(best_timetable, N):
     return solution_str
 
 def find_best_params(file_path):
+    """Test multiple parameter configurations and select the best.
+    
+    Runs each configuration multiple times and compares mean fitness.
+    """
+    # Define parameter configurations to test
     param_grid = [
         {"pop_size": 300, "generations": 400, "crossover_rate": 0.9, "mutation_rate": 0.04, "elitism_count": 5, "tournament_size": 5},
         {"pop_size": 400, "generations": 350, "crossover_rate": 0.85, "mutation_rate": 0.06, "elitism_count": 4, "tournament_size": 6},
@@ -230,8 +305,8 @@ def find_best_params(file_path):
         param_results.append((result['mean_fitness'], params, result))
         print(f"  → Mean fitness: {result['mean_fitness']:.2f}, Best: {result['best_fitness']}, Worst: {result['worst_fitness']}")
     
-    # Select best configuration based on mean fitness
-    param_results.sort(key=lambda x: x[0])
+    # Select best configuration based on mean fitness across trials
+    param_results.sort(key=lambda x: x[0])  # Sort by mean fitness
     best_mean_fitness, best_params, best_stats = param_results[0]
     
     print(f"\n Best configuration selected with mean fitness: {best_mean_fitness:.2f}")
@@ -244,6 +319,13 @@ def find_best_params(file_path):
                          E, M, N, K, best_stats['best_fitness'])
 
 def main():
+    """Main experimental workflow:
+    1. Parameter tuning on primary instance
+    2. Performance evaluation on all instances
+    3. Convergence analysis with multiple trials
+    4. Visualization of results
+    5. Display best solution found
+    """
     print("="*80)
     print("EXPERIMENTAL RESULTS FOR EXAM TIMETABLING GENETIC ALGORITHM")
     print("="*80)
@@ -256,7 +338,7 @@ def main():
         print("No test files found!")
         return
     
-    primary_instance = test_files[3]
+    primary_instance = test_files[2]
     
     # PART 1: FIND BEST PARAMETERS
     print("\n" + "="*80)
@@ -335,11 +417,13 @@ def main():
     print("4. GENERATING CONVERGENCE GRAPHS")
     print("="*80)
     
-    # Plot convergence curves
+    # Plot convergence curves from all trials
     plt.figure(figsize=(12, 6))
+    # Plot individual runs with transparency
     for i, curve in enumerate(stats['fitness_curves']):
         plt.plot(curve, alpha=0.3, linewidth=1, color='steelblue')
     
+    # Calculate and plot mean convergence across all runs
     avg_curve = np.mean(stats['fitness_curves'], axis=0)
     plt.plot(avg_curve, color='red', linewidth=3, label='Mean Convergence')
     
